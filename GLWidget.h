@@ -76,6 +76,8 @@ public:
     QWaitCondition *grabCond() { return &m_grabCond; }
     void prepareExit() { m_exiting = true; m_grabCond.wakeAll(); }
 
+    void initGLBuffer();
+
 signals:
     void contextWanted();
 
@@ -87,17 +89,17 @@ private:
     void createGeometry();
     void quad(qreal x1, qreal y1, qreal x2, qreal y2, qreal x3, qreal y3, qreal x4, qreal y4);
     void extrude(qreal x1, qreal y1, qreal x2, qreal y2);
+    void restoreContext();
 
-    bool m_inited;
     qreal m_fAngle;
     qreal m_fScale;
-    QVector<QVector3D> vertices;
-    QVector<QVector3D> normals;
-    QOpenGLShaderProgram program;
-    QOpenGLBuffer vbo;
-    int vertexAttr;
-    int normalAttr;
-    int matrixUniform;
+    QVector<QVector3D> m_vertices;
+    QVector<QVector3D> m_normals;
+    QOpenGLShaderProgram m_program;
+    QOpenGLBuffer m_vbo;
+    int m_vertexAttr;
+    int m_normalAttr;
+    int m_matrixUniform;
     GLWidget *m_glwidget;
     QMutex m_renderMutex;
     QElapsedTimer m_elapsed;
@@ -116,6 +118,7 @@ public:
 
 protected:
     void paintEvent(QPaintEvent *) override { }
+    void initializeGL() override;
 
 signals:
     void renderRequested();

@@ -48,6 +48,9 @@
 **
 ****************************************************************************/
 
+#include "MainWindow.h"
+#include "GLWidget.h"
+
 #include <QApplication>
 #include <QMainWindow>
 #include <QDesktopWidget>
@@ -56,8 +59,6 @@
 #include <QCommandLineParser>
 #include <QCommandLineOption>
 #include <QtPlugin>
-#include "MainWindow.h"
-#include "GLWidget.h"
 
 #if defined(QT_STATIC)
 #if defined(Q_OS_WIN)
@@ -100,7 +101,6 @@ int main( int argc, char ** argv )
     GLWidget topLevelGlWidget;
     QPoint pos = QApplication::desktop()->availableGeometry(&topLevelGlWidget).topLeft() + QPoint(200, 200);
     topLevelGlWidget.setWindowTitle(QStringLiteral("Threaded QOpenGLWidget example top level"));
-    topLevelGlWidget.resize(200, 200);
     topLevelGlWidget.move(pos);
     topLevelGlWidget.show();
 

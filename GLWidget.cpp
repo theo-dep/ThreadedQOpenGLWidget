@@ -49,8 +49,10 @@
 ****************************************************************************/
 
 #include "GLWidget.h"
-#include <qmath.h>
+
 #include <QApplication>
+
+#include <qmath.h>
 
 GLWidget::GLWidget(QWidget *parent) : QOpenGLWidget(parent)
 {
@@ -97,8 +99,8 @@ void GLWidget::onFrameSwapped()
 
 void GLWidget::onAboutToResize()
 {
-    // process events before resizing to avoid crash "Cannot make QOpenGLContext current in a different thread"
-    QCoreApplication::processEvents();
+    // sleep small time before resizing to avoid crash "Cannot make QOpenGLContext current in a different thread"
+    QThread::msleep(10);
     m_renderer->lockRenderer();
 }
 
@@ -116,32 +118,97 @@ void GLWidget::grabContext()
     m_renderer->unlockRenderer();
 }
 
-Renderer::Renderer(GLWidget *w)
-    : m_inited(false),
-      m_glwidget(w),
-      m_exiting(false)
+void GLWidget::initializeGL()
+{
+    QOpenGLWidget::initializeGL();
+    m_renderer->initGLBuffer();
+}
+
+Renderer::Renderer(GLWidget *w) : QObject(nullptr), QOpenGLFunctions()
+    , m_glwidget(w)
+    , m_exiting(false)
 {
 }
 
 void Renderer::paintQtLogo()
 {
-    vbo.bind();
-    program.setAttributeBuffer(vertexAttr, GL_FLOAT, 0, 3);
-    program.setAttributeBuffer(normalAttr, GL_FLOAT, vertices.count() * 3 * sizeof(GLfloat), 3);
-    vbo.release();
+    if (!m_vbo.bind())
+    {
+        qFatal("Fail to bind GL buffer");
+        return;
+    }
+    m_program.setAttributeBuffer(m_vertexAttr, GL_FLOAT, 0, 3);
+    m_program.setAttributeBuffer(m_normalAttr, GL_FLOAT, m_vertices.count() * 3 * sizeof(GLfloat), 3);
+    m_vbo.release();
 
-    program.enableAttributeArray(vertexAttr);
-    program.enableAttributeArray(normalAttr);
+    m_program.enableAttributeArray(m_vertexAttr);
+    m_program.enableAttributeArray(m_normalAttr);
 
-    glDrawArrays(GL_TRIANGLES, 0, vertices.size());
+    glDrawArrays(GL_TRIANGLES, 0, m_vertices.size());
 
-    program.disableAttributeArray(normalAttr);
-    program.disableAttributeArray(vertexAttr);
+    m_program.disableAttributeArray(m_normalAttr);
+    m_program.disableAttributeArray(m_vertexAttr);
 }
 
 // Some OpenGL implementations have serious issues with compiling and linking
 // shaders on multiple threads concurrently. Avoid this.
 Q_GLOBAL_STATIC(QMutex, initMutex)
+
+void Renderer::initGLBuffer()
+{
+    initializeOpenGLFunctions();
+
+    const char *vsrc =
+        "attribute highp vec4 vertex;\n"
+        "attribute mediump vec3 normal;\n"
+        "uniform mediump mat4 matrix;\n"
+        "varying mediump vec4 color;\n"
+        "void main(void)\n"
+        "{\n"
+        "    vec3 toLight = normalize(vec3(0.0, 0.3, 1.0));\n"
+        "    float angle = max(dot(normal, toLight), 0.0);\n"
+        "    vec3 col = vec3(0.40, 1.0, 0.0);\n"
+        "    color = vec4(col * 0.2 + col * 0.8 * angle, 1.0);\n"
+        "    color = clamp(color, 0.0, 1.0);\n"
+        "    gl_Position = matrix * vertex;\n"
+        "}\n";
+
+    const char *fsrc =
+        "varying mediump vec4 color;\n"
+        "void main(void)\n"
+        "{\n"
+        "    gl_FragColor = color;\n"
+        "}\n";
+
+    bool isOk = m_program.addCacheableShaderFromSourceCode(QOpenGLShader::Vertex, vsrc);
+    isOk &= m_program.addCacheableShaderFromSourceCode(QOpenGLShader::Fragment, fsrc);
+    isOk &= m_program.link();
+    if (!isOk)
+    {
+        qFatal("Fail to compile GLSL program");
+        return;
+    }
+
+    m_vertexAttr = m_program.attributeLocation("vertex");
+    m_normalAttr = m_program.attributeLocation("normal");
+    m_matrixUniform = m_program.uniformLocation("matrix");
+
+    m_fAngle = 0;
+    m_fScale = 1;
+    createGeometry();
+
+    if (!m_vbo.create() || !m_vbo.bind())
+    {
+        qFatal("Fail to bind GL buffer");
+        return;
+    }
+    const int verticesSize = m_vertices.count() * 3 * sizeof(GLfloat);
+    m_vbo.allocate(verticesSize * 2);
+    m_vbo.write(0, m_vertices.constData(), verticesSize);
+    m_vbo.write(verticesSize, m_normals.constData(), verticesSize);
+
+    m_elapsed.start();
+}
 
 void Renderer::render()
 {
@@ -162,65 +229,15 @@ void Renderer::render()
     if (m_exiting)
         return;
 
-    if (ctx->thread() != thread())
+    if (ctx->thread() != thread() || !ctx->isValid())
+    {
+        qFatal("Fail to move context in current thread");
         return;
+    }
 
     // Make the context (and an offscreen surface) current for this thread. The
     // QOpenGLWidget's fbo is bound in the context.
     m_glwidget->makeCurrent();
-
-    if (!m_inited) {
-        m_inited = true;
-        initializeOpenGLFunctions();
-
-        QMutexLocker initLock(initMutex());
-        QOpenGLShader *vshader = new QOpenGLShader(QOpenGLShader::Vertex, this);
-        const char *vsrc =
-            "attribute highp vec4 vertex;\n"
-            "attribute mediump vec3 normal;\n"
-            "uniform mediump mat4 matrix;\n"
-            "varying mediump vec4 color;\n"
-            "void main(void)\n"
-            "{\n"
-            "    vec3 toLight = normalize(vec3(0.0, 0.3, 1.0));\n"
-            "    float angle = max(dot(normal, toLight), 0.0);\n"
-            "    vec3 col = vec3(0.40, 1.0, 0.0);\n"
-            "    color = vec4(col * 0.2 + col * 0.8 * angle, 1.0);\n"
-            "    color = clamp(color, 0.0, 1.0);\n"
-            "    gl_Position = matrix * vertex;\n"
-            "}\n";
-        vshader->compileSourceCode(vsrc);
-
-        QOpenGLShader *fshader = new QOpenGLShader(QOpenGLShader::Fragment, this);
-        const char *fsrc =
-            "varying mediump vec4 color;\n"
-            "void main(void)\n"
-            "{\n"
-            "    gl_FragColor = color;\n"
-            "}\n";
-        fshader->compileSourceCode(fsrc);
-
-        program.addShader(vshader);
-        program.addShader(fshader);
-        program.link();
-
-        vertexAttr = program.attributeLocation("vertex");
-        normalAttr = program.attributeLocation("normal");
-        matrixUniform = program.uniformLocation("matrix");
-
-        m_fAngle = 0;
-        m_fScale = 1;
-        createGeometry();
-
-        vbo.create();
-        vbo.bind();
-        const int verticesSize = vertices.count() * 3 * sizeof(GLfloat);
-        vbo.allocate(verticesSize * 2);
-        vbo.write(0, vertices.constData(), verticesSize);
-        vbo.write(verticesSize, normals.constData(), verticesSize);
-
-        m_elapsed.start();
-    }
 
     //qDebug("%p elapsed %lld", QThread::currentThread(), m_elapsed.restart());
 
@@ -237,12 +254,17 @@ void Renderer::render()
     modelview.rotate(m_fAngle, 1.0f, 0.0f, 0.0f);
     modelview.rotate(m_fAngle, 0.0f, 0.0f, 1.0f);
     modelview.scale(m_fScale);
-    modelview.translate(0.0f, -0.2f, 0.0f);
+    modelview.translate(-0.2f, -0.2f, 0.0f);
 
-    program.bind();
-    program.setUniformValue(matrixUniform, modelview);
+    if (!m_program.bind())
+    {
+        qFatal("Fail to bind GLSL program");
+        restoreContext();
+        return;
+    }
+    m_program.setUniformValue(m_matrixUniform, modelview);
     paintQtLogo();
-    program.release();
+    m_program.release();
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -251,18 +273,27 @@ void Renderer::render()
 
     // Make no context current on this thread and move the QOpenGLWidget's
     // context back to the gui thread.
-    m_glwidget->doneCurrent();
-    ctx->moveToThread(QApplication::instance()->thread());
+    restoreContext();
 
     // Schedule composition. Note that this will use QueuedConnection, meaning
     // that update() will be invoked on the gui thread.
     QMetaObject::invokeMethod(m_glwidget, "update");
 }
 
+void Renderer::restoreContext()
+{
+    QOpenGLContext *ctx = m_glwidget->context();
+    if (!ctx) // QOpenGLWidget not yet initialized
+        return;
+
+    m_glwidget->doneCurrent();
+    ctx->moveToThread(qApp->thread());
+}
+
 void Renderer::createGeometry()
 {
-    vertices.clear();
-    normals.clear();
+    m_vertices.clear();
+    m_normals.clear();
 
     qreal x1 = +0.06f;
     qreal y1 = -0.14f;
@@ -306,69 +337,69 @@ void Renderer::createGeometry()
         extrude(x8, y8, x5, y5);
     }
 
-    for (int i = 0;i < vertices.size();i++)
-        vertices[i] *= 2.0f;
+    for (int i = 0;i < m_vertices.size();i++)
+        m_vertices[i] *= 2.0f;
 }
 
 void Renderer::quad(qreal x1, qreal y1, qreal x2, qreal y2, qreal x3, qreal y3, qreal x4, qreal y4)
 {
-    vertices << QVector3D(x1, y1, -0.05f);
-    vertices << QVector3D(x2, y2, -0.05f);
-    vertices << QVector3D(x4, y4, -0.05f);
+    m_vertices << QVector3D(x1, y1, -0.05f);
+    m_vertices << QVector3D(x2, y2, -0.05f);
+    m_vertices << QVector3D(x4, y4, -0.05f);
 
-    vertices << QVector3D(x3, y3, -0.05f);
-    vertices << QVector3D(x4, y4, -0.05f);
-    vertices << QVector3D(x2, y2, -0.05f);
+    m_vertices << QVector3D(x3, y3, -0.05f);
+    m_vertices << QVector3D(x4, y4, -0.05f);
+    m_vertices << QVector3D(x2, y2, -0.05f);
 
     QVector3D n = QVector3D::normal
         (QVector3D(x2 - x1, y2 - y1, 0.0f), QVector3D(x4 - x1, y4 - y1, 0.0f));
 
-    normals << n;
-    normals << n;
-    normals << n;
+    m_normals << n;
+    m_normals << n;
+    m_normals << n;
 
-    normals << n;
-    normals << n;
-    normals << n;
+    m_normals << n;
+    m_normals << n;
+    m_normals << n;
 
-    vertices << QVector3D(x4, y4, 0.05f);
-    vertices << QVector3D(x2, y2, 0.05f);
-    vertices << QVector3D(x1, y1, 0.05f);
+    m_vertices << QVector3D(x4, y4, 0.05f);
+    m_vertices << QVector3D(x2, y2, 0.05f);
+    m_vertices << QVector3D(x1, y1, 0.05f);
 
-    vertices << QVector3D(x2, y2, 0.05f);
-    vertices << QVector3D(x4, y4, 0.05f);
-    vertices << QVector3D(x3, y3, 0.05f);
+    m_vertices << QVector3D(x2, y2, 0.05f);
+    m_vertices << QVector3D(x4, y4, 0.05f);
+    m_vertices << QVector3D(x3, y3, 0.05f);
 
     n = QVector3D::normal
         (QVector3D(x2 - x4, y2 - y4, 0.0f), QVector3D(x1 - x4, y1 - y4, 0.0f));
 
-    normals << n;
-    normals << n;
-    normals << n;
+    m_normals << n;
+    m_normals << n;
+    m_normals << n;
 
-    normals << n;
-    normals << n;
-    normals << n;
+    m_normals << n;
+    m_normals << n;
+    m_normals << n;
 }
 
 void Renderer::extrude(qreal x1, qreal y1, qreal x2, qreal y2)
 {
-    vertices << QVector3D(x1, y1, +0.05f);
-    vertices << QVector3D(x2, y2, +0.05f);
-    vertices << QVector3D(x1, y1, -0.05f);
+    m_vertices << QVector3D(x1, y1, +0.05f);
+    m_vertices << QVector3D(x2, y2, +0.05f);
+    m_vertices << QVector3D(x1, y1, -0.05f);
 
-    vertices << QVector3D(x2, y2, -0.05f);
-    vertices << QVector3D(x1, y1, -0.05f);
-    vertices << QVector3D(x2, y2, +0.05f);
+    m_vertices << QVector3D(x2, y2, -0.05f);
+    m_vertices << QVector3D(x1, y1, -0.05f);
+    m_vertices << QVector3D(x2, y2, +0.05f);
 
     QVector3D n = QVector3D::normal
         (QVector3D(x2 - x1, y2 - y1, 0.0f), QVector3D(0.0f, 0.0f, -0.1f));
 
-    normals << n;
-    normals << n;
-    normals << n;
+    m_normals << n;
+    m_normals << n;
+    m_normals << n;
 
-    normals << n;
-    normals << n;
-    normals << n;
+    m_normals << n;
+    m_normals << n;
+    m_normals << n;
 }

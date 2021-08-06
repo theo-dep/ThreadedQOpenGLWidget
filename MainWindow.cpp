@@ -51,13 +51,19 @@
 #include "MainWindow.h"
 #include "GLWidget.h"
 
+#include <QHBoxLayout>
+
 MainWindow::MainWindow()
 {
     setMinimumSize(800, 400);
+
+    QHBoxLayout* layout = new QHBoxLayout(this);
+    layout->setMargin(0);
+    layout->setSpacing(0);
+
     GLWidget *glwidget1 = new GLWidget(this);
-    glwidget1->resize(400, 400);
+    layout->addWidget(glwidget1);
 
     GLWidget *glwidget2 = new GLWidget(this);
-    glwidget2->resize(400, 400);
-    glwidget2->move(400, 0);
+    layout->addWidget(glwidget2);
 }
